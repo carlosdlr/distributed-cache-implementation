@@ -22,14 +22,16 @@ public class DistributedCache {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ScheduledExecutorService cleanupExecutor;
     private final long ttlMillis;
+    private final boolean isLeader;
 
     private static final Logger logger = LoggerFactory.getLogger(DistributedCache.class);
 
-    public DistributedCache(int port, List<String> peerNodes, long ttlMillis) throws IOException {
+    public DistributedCache(int port, List<String> peerNodes, long ttlMillis, boolean isLeader) throws IOException {
         logger.info("Initializing DistributedCache on port {} with {} peer nodes", port, peerNodes.size());
         this.port = port;
         this.peerNodes = peerNodes;
         this.ttlMillis = ttlMillis;
+        this.isLeader = peerNodes.isEmpty() || isLeader;
         this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor();
         Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
         startHttpServer();
@@ -123,7 +125,9 @@ public class DistributedCache {
     public void put(String key, String value) {
         logger.debug("Adding entry to cache: key={}", key);
         localCache.put(key, new CacheEntry(value, System.currentTimeMillis()));
-        notifyOtherNodes(key, value);
+        if(isLeader) {
+            notifyOtherNodes(key, value);
+        }
     }
 
     public Optional<String> get(String key) {

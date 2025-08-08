@@ -16,11 +16,12 @@ public class Main {
         try{
         var port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         var peersEnv = System.getenv().getOrDefault("PEER_NODES", "");
+        var isLeaderEnv = System.getenv().getOrDefault("IS_LEADER", "true");
         var peers = Arrays.stream(peersEnv.split(","))
                 .filter(s -> !s.isEmpty())
                 .toList();
         logger.info("Starting distributed cache application");
-        var cache = new DistributedCache(port, peers, 60000);
+        new DistributedCache(port, peers, 60000, Boolean.parseBoolean(isLeaderEnv));
         logger.info("Cache initialized successfully");
 
         } catch (Exception e) {

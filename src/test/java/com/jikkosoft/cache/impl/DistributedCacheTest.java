@@ -16,7 +16,7 @@ class DistributedCacheTest {
     @BeforeAll
     static void setUp() throws IOException {
         // Use an unused port and no peers for local tests
-        cache = new DistributedCache(9999, List.of(), 60000); // 60 seconds TTL
+        cache = new DistributedCache(9999, List.of(), 60000, false); // 60 seconds TTL
     }
 
     @Test
