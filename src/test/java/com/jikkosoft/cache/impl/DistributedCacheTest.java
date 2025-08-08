@@ -21,7 +21,7 @@ class DistributedCacheTest {
 
     @Test
     void testPutAndGet() {
-        cache.put("my-key", "value");
+        cache.put(new CacheUpdate("my-key", "value", new VectorClock()));
         Optional<String> value = cache.get("my-key");
         assertTrue(value.isPresent());
         assertEquals("value", value.get());
@@ -34,8 +34,15 @@ class DistributedCacheTest {
 
     @Test
     void testUpdateOverwritesValue() {
-        cache.put("key", "v1");
-        cache.put("key", "v2");
+        var vectorClock1 = new VectorClock();
+        vectorClock1.increment("node1");
+        cache.put(new CacheUpdate("key", "v1", vectorClock1));
+
+        var vectorClock2 = new VectorClock();
+        vectorClock2.increment("node1");
+        vectorClock2.increment("node2"); // Simulate an update from another node
+        cache.put(new CacheUpdate("key", "v2", vectorClock2));
+
         assertEquals("v2", cache.get("key").orElse(null));
     }
 

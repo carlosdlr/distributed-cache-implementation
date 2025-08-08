@@ -16,6 +16,7 @@ import java.util.concurrent.*;
 public class DistributedCache {
     private record PeerNotification(String peer, CacheUpdate update) {}
 
+    private final String nodeId = java.util.UUID.randomUUID().toString();
     private final ConcurrentHashMap<String, CacheEntry> localCache = new ConcurrentHashMap<>();
     private final List<String> peerNodes;
     private final int port;
@@ -23,6 +24,8 @@ public class DistributedCache {
     private final ScheduledExecutorService cleanupExecutor;
     private final long ttlMillis;
     private final boolean isLeader;
+    private final VectorClock vectorClock = new VectorClock();
+
 
     private static final Logger logger = LoggerFactory.getLogger(DistributedCache.class);
 
@@ -74,7 +77,7 @@ public class DistributedCache {
             logger.info("Received update request from {}", exchange.getRemoteAddress());
             var requestBody = exchange.getRequestBody().readAllBytes();
             var update = objectMapper.readValue(requestBody, CacheUpdate.class);
-            put(update.key(), update.value());
+            put(update);
             exchange.sendResponseHeaders(200, 0);
             logger.info("Cache update processed: key={}", update.key());
         } catch (IOException e) {
@@ -122,11 +125,22 @@ public class DistributedCache {
         }
     }
 
-    public void put(String key, String value) {
-        logger.debug("Adding entry to cache: key={}", key);
-        localCache.put(key, new CacheEntry(value, System.currentTimeMillis()));
+    public void put(CacheUpdate update) {
+        logger.debug("Adding entry to cache: key={}", update.key());
+        vectorClock.increment(nodeId);
+        handleUpdate(update);
         if(isLeader) {
-            notifyOtherNodes(key, value);
+            notifyOtherNodes(update.key(), update.value());
+        }
+    }
+
+    private void handleUpdate(CacheUpdate update) {
+        CacheEntry existing = localCache.get(update.key());
+        if (existing == null || update.vectorClock().isNewerThan(existing.vectorClock())) {
+            logger.debug("Updating cache entry: key={}, value={}", update.key(), update.value());
+            localCache.put(update.key(), update.value() != null ?
+                    new CacheEntry(update.value(), System.currentTimeMillis(), update.vectorClock()) :
+                    null);
         }
     }
 
@@ -137,7 +151,8 @@ public class DistributedCache {
     }
 
     private void notifyOtherNodes(String key, String value) {
-        var update = new CacheUpdate(key, value);
+        var update = new CacheUpdate(key, value, vectorClock);
+        logger.info("Notifying peer nodes of update: key={}, value={}", key, value);
         peerNodes.stream()
                 .map(peer -> new PeerNotification(peer, update))
                 .forEach(this::sendNotification);

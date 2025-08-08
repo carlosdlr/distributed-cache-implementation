@@ -1,6 +1,8 @@
 package com.jikkosoft.cache.model;
 
-public record CacheEntry(String value, long timestamp) {
+import com.jikkosoft.cache.impl.*;
+
+public record CacheEntry(String value, long timestamp, VectorClock vectorClock) {
     public boolean isExpired(long ttlMillis) {
         return System.currentTimeMillis() - timestamp > ttlMillis;
     }
