@@ -1,6 +1,6 @@
 # Distributed Cache Implementation
 
-A simple distributed cache implementation using Java 17 and HTTP communication between nodes.
+A simple distributed cache implementation using Java 17 or higher and HTTP communication between nodes.
 
 ## Features
 
