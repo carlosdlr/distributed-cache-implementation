@@ -167,10 +167,6 @@
           <artifactId>json-schema-validator</artifactId>
           <groupId>com.networknt</groupId>
         </exclusion>
-        <exclusion>
-          <artifactId>slf4j-api</artifactId>
-          <groupId>org.slf4j</groupId>
-        </exclusion>
       </exclusions>
     </dependency>
     <dependency>

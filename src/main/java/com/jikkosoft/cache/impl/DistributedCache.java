@@ -3,6 +3,7 @@ package com.jikkosoft.cache.impl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jikkosoft.cache.model.*;
 import com.sun.net.httpserver.HttpServer;
+import org.slf4j.*;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -10,20 +11,48 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 
 public class DistributedCache {
     private record PeerNotification(String peer, CacheUpdate update) {}
 
-    private final ConcurrentHashMap<String, String> localCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CacheEntry> localCache = new ConcurrentHashMap<>();
     private final List<String> peerNodes;
     private final int port;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ScheduledExecutorService cleanupExecutor;
+    private final long ttlMillis;
 
-    public DistributedCache(int port, List<String> peerNodes) throws IOException {
+    private static final Logger logger = LoggerFactory.getLogger(DistributedCache.class);
+
+    public DistributedCache(int port, List<String> peerNodes, long ttlMillis) throws IOException {
+        logger.info("Initializing DistributedCache on port {} with {} peer nodes", port, peerNodes.size());
         this.port = port;
         this.peerNodes = peerNodes;
+        this.ttlMillis = ttlMillis;
+        this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor();
+        Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
         startHttpServer();
+        scheduleCleanup();
+    }
+
+    private void scheduleCleanup() {
+        cleanupExecutor.scheduleAtFixedRate(
+                this::evictExpiredEntries,
+                ttlMillis / 2,
+                ttlMillis / 2,
+                TimeUnit.MILLISECONDS
+        );
+    }
+
+
+    private void evictExpiredEntries() {
+        int sizeBefore = localCache.size();
+        localCache.entrySet().removeIf(entry -> entry.getValue().isExpired(ttlMillis));
+        int evicted = sizeBefore - localCache.size();
+        if (evicted > 0) {
+            logger.info("Evicted {} expired entries from cache", evicted);
+        }
     }
 
     private void startHttpServer() throws IOException {
@@ -40,11 +69,14 @@ public class DistributedCache {
 
     private void handleUpdateRequest(com.sun.net.httpserver.HttpExchange exchange) {
         try {
+            logger.info("Received update request from {}", exchange.getRemoteAddress());
             var requestBody = exchange.getRequestBody().readAllBytes();
             var update = objectMapper.readValue(requestBody, CacheUpdate.class);
             put(update.key(), update.value());
             exchange.sendResponseHeaders(200, 0);
+            logger.info("Cache update processed: key={}", update.key());
         } catch (IOException e) {
+            logger.error("Error handling update request", e);
             try {
                 exchange.sendResponseHeaders(500, 0);
             } catch (IOException ignored) {}
@@ -55,22 +87,31 @@ public class DistributedCache {
 
     private void handleGetRequest(com.sun.net.httpserver.HttpExchange exchange) {
         try {
+            logger.info("Received GET request from {}", exchange.getRemoteAddress());
             if ("GET".equals(exchange.getRequestMethod())) {
                 var query = exchange.getRequestURI().getQuery();
                 String key = null;
                 if (query != null && query.startsWith("key=")) {
                     key = query.substring(4);
                 }
+                logger.debug("Requested key: {}", key);
                 String value = get(key).orElse(null);
+                if (value != null) {
+                    logger.info("Cache hit for key: {}", key);
+                } else {
+                    logger.info("Cache miss for key: {}", key);
+                }
                 byte[] response = value != null ? value.getBytes() : new byte[0];
                 exchange.sendResponseHeaders(value != null ? 200 : 404, response.length);
                 if (response.length > 0) {
                     exchange.getResponseBody().write(response);
                 }
             } else {
+                logger.warn("Unsupported HTTP method: {}", exchange.getRequestMethod());
                 exchange.sendResponseHeaders(405, 0);
             }
         } catch (IOException e) {
+            logger.error("Unsupported HTTP method: {}", exchange.getRequestMethod());
             try {
                 exchange.sendResponseHeaders(500, 0);
             } catch (IOException ignored) {}
@@ -80,12 +121,15 @@ public class DistributedCache {
     }
 
     public void put(String key, String value) {
-        localCache.put(key, value);
+        logger.debug("Adding entry to cache: key={}", key);
+        localCache.put(key, new CacheEntry(value, System.currentTimeMillis()));
         notifyOtherNodes(key, value);
     }
 
     public Optional<String> get(String key) {
-        return Optional.ofNullable(localCache.get(key));
+        return Optional.ofNullable(localCache.get(key))
+                .filter(entry -> !entry.isExpired(ttlMillis))
+                .map(CacheEntry::value);
     }
 
     private void notifyOtherNodes(String key, String value) {
@@ -111,12 +155,26 @@ public class DistributedCache {
 
             var responseCode = conn.getResponseCode();
             if (responseCode != 200) {
-                System.err.println("Failed to notify peer: " + notification.peer() +
-                        ", response code: " + responseCode);
+                logger.error("Failed to notify peer: {}, response code: {}",
+                        notification.peer(), responseCode);
             }
+            conn.disconnect();
         } catch (IOException e) {
-            System.err.println("Failed to notify peer: " + notification.peer() +
-                    ", error: " + e.getMessage());
+            logger.error("Failed to notify peer: {}", notification.peer(), e);
         }
+    }
+
+    public void shutdown() {
+        logger.info("Shutting down DistributedCache");
+        cleanupExecutor.shutdown();
+        try {
+            if (!cleanupExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
+                cleanupExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            cleanupExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        logger.info("DistributedCache shutdown completed");
     }
 }
