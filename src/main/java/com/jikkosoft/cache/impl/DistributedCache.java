@@ -66,10 +66,27 @@ public class DistributedCache {
         // Map endpoints with clear RESTful paths
         server.createContext("/update", this::handleUpdateRequest);
         server.createContext("/get", this::handleGetRequest);
-
+        server.createContext("/notify", this::handleNotifyRequest);
         // Set thread pool for handling requests
         server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(10));
         server.start();
+    }
+
+    private void handleNotifyRequest(com.sun.net.httpserver.HttpExchange exchange) {
+        try {
+            logger.info("Received notification request from {}", exchange.getRemoteAddress());
+            var requestBody = exchange.getRequestBody().readAllBytes();
+            var update = objectMapper.readValue(requestBody, CacheUpdate.class);
+            handleUpdate(update);
+            exchange.sendResponseHeaders(200, 0);
+        } catch (IOException e) {
+            logger.error("Error handling notification request", e);
+            try {
+                exchange.sendResponseHeaders(500, 0);
+            } catch (IOException ignored) {}
+        } finally {
+            exchange.close();
+        }
     }
 
     private void handleUpdateRequest(com.sun.net.httpserver.HttpExchange exchange) {
