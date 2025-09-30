@@ -149,9 +149,7 @@ public class DistributedCache {
         logger.debug("Adding entry to cache: key={}", update.key());
         vectorClock.increment(nodeId);
         handleUpdate(update);
-        if(isLeader) {
-            notifyOtherNodes(update.key(), update.value());
-        }
+        notifyOtherNodes(update.key(), update.value());
     }
 
     private void handleUpdate(CacheUpdate update) {
