@@ -2,6 +2,7 @@ package com.jikkosoft.cache.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jikkosoft.cache.model.*;
+import com.jikkosoft.cache.service.*;
 import com.sun.net.httpserver.HttpServer;
 import org.slf4j.*;
 
@@ -25,6 +26,7 @@ public class DistributedCache {
     private final long ttlMillis;
     private final boolean isLeader;
     private final VectorClock vectorClock = new VectorClock();
+    private final NotificationService notificationService;
 
 
     private static final Logger logger = LoggerFactory.getLogger(DistributedCache.class);
@@ -36,6 +38,7 @@ public class DistributedCache {
         this.ttlMillis = ttlMillis;
         this.isLeader = peerNodes.isEmpty() || isLeader;
         this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor();
+        this.notificationService = new NotificationServiceImpl(peerNodes, objectMapper);
         Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
         startHttpServer();
         scheduleCleanup();
@@ -170,45 +173,23 @@ public class DistributedCache {
     private void notifyOtherNodes(String key, String value) {
         var update = new CacheUpdate(key, value, vectorClock);
         logger.info("Notifying peer nodes of update: key={}, value={}", key, value);
-        peerNodes.stream()
-                .map(peer -> new PeerNotification(peer, update))
-                .forEach(this::sendNotification);
+        notificationService.notifyPeers("/notify", update);
     }
 
-    private void sendNotification(PeerNotification notification) {
-        try {
-            var url = new URL("http://" + notification.peer() + "/update");
-            var conn = (HttpURLConnection) url.openConnection();
-
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-
-            var jsonUpdate = objectMapper.writeValueAsString(notification.update());
-            try (var os = conn.getOutputStream()) {
-                os.write(jsonUpdate.getBytes());
-            }
-
-            var responseCode = conn.getResponseCode();
-            if (responseCode != 200) {
-                logger.error("Failed to notify peer: {}, response code: {}",
-                        notification.peer(), responseCode);
-            }
-            conn.disconnect();
-        } catch (IOException e) {
-            logger.error("Failed to notify peer: {}", notification.peer(), e);
-        }
-    }
-
+    /**
+     * Shuts down the DistributedCache, stopping the HTTP server and cleaning up resources.
+     */
     public void shutdown() {
         logger.info("Shutting down DistributedCache");
         cleanupExecutor.shutdown();
         try {
             if (!cleanupExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
                 cleanupExecutor.shutdownNow();
+                notificationService.shutdown();
             }
         } catch (InterruptedException e) {
             cleanupExecutor.shutdownNow();
+            notificationService.shutdown();
             Thread.currentThread().interrupt();
         }
         logger.info("DistributedCache shutdown completed");
